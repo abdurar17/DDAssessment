@@ -1,0 +1,150 @@
+data "aws_caller_identity" "current" {}
+
+// Enabling CloudTrial in all regions
+
+resource "aws_cloudtrail" "digital" {
+  name                          = "tf-trail-digital"
+  s3_bucket_name                = aws_s3_bucket.digi.id
+  s3_key_prefix                 = "prefix"
+  include_global_service_events = false
+}
+
+resource "aws_s3_bucket" "digi" {
+  bucket        = "tf-test-trail"
+  force_destroy = true
+
+  policy = <<POLICY
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AWSCloudTrailAclCheck",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "cloudtrail.amazonaws.com"
+            },
+            "Action": "s3:GetBucketAcl",
+            "Resource": "arn:aws:s3:::tf-test-trail"
+        },
+        {
+            "Sid": "AWSCloudTrailWrite",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "cloudtrail.amazonaws.com"
+            },
+            "Action": "s3:PutObject",
+            "Resource": "arn:aws:s3:::tf-test-trail/prefix/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+            "Condition": {
+                "StringEquals": {
+                    "s3:x-amz-acl": "bucket-owner-full-control"
+                }
+            }
+        }
+    ]
+}
+POLICY
+}
+
+
+// Storing CloudTrials logs in S3
+
+module "cloudtrail" {
+  source = "abdur/cloudtrail-s3-bucket/aws"
+  namespace                     = "eg"
+  stage                         = "dev"
+  name                          = "cluster"
+  enable_log_file_validation    = true
+  include_global_service_events = true
+  is_multi_region_trail         = false
+  enable_logging                = true
+  s3_bucket_name                = module.cloudtrail_s3_bucket.bucket_id
+}
+
+module "cloudtrail_s3_bucket" {
+  source = "abdur/cloudtrail-s3-bucket/aws"
+  namespace = "eg"
+  stage     = "dev"
+  name      = "cluster"
+}
+
+// Integrating CloudTrial with CloudWatch
+
+module "metric_configs" {
+  source  = "abdur/config/yaml"
+
+
+  map_config_local_base_path = "./catalog"
+  map_config_paths           = "*.yaml"
+
+  context = module.this.context
+}
+
+module "cloudtrail_api_alarms" {
+  source  = "abdur/cloudtrail-cloudwatch-alarms/aws"
+
+  log_group_name = "${aws_cloudwatch_log_group.default.name}"
+  metrics = module.metric_configs.map_configs
+}
+
+module "cloudtrail_alarms" {
+  source         = "trussworks/cloudtrail-alarms/aws"
+  version        = "~> 1.0.0"
+
+  alarm_sns_topic_arn = aws_sns_topic.my_alerts.arn
+}
+
+//  Cloudwatch filter to notify when No MFA ACCOUNT LOGS in
+
+resource "aws_cloudwatch_log_metric_filter" "noMFA" {
+  name           = "MyAppAccessCount"
+  pattern        = ""
+  log_group_name = aws_cloudwatch_log_group.noMFASign-In.name
+
+  metric_transformation {
+    name      = "EventCount"
+    namespace = "YourNamespace"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "noMFASign-In" {
+  name = "MyApp1/access.log"
+}
+
+//  Cloudwatch filter to notify when No ROOT Account logs in
+
+resource "aws_cloudwatch_log_metric_filter" "rootacc" {
+  name           = "MyApp1AccessCount"
+  pattern        = ""
+  log_group_name = aws_cloudwatch_log_group.root.name
+
+  metric_transformation {
+    name      = "EventCount"
+    namespace = "YourNamespace"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "root" {
+  name = "MyApp2/access.log"
+}
+
+//  Cloudwatch filter to notify when any Unauthorized API is called
+
+resource "aws_cloudwatch_log_metric_filter" "API" {
+  name           = "MyApp2AccessCount"
+  pattern        = ""
+  log_group_name = aws_cloudwatch_log_group.UnAPI.name
+
+  metric_transformation {
+    name      = "EventCount"
+    namespace = "YourNamespace"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "UnAPI" {
+  name = "MyApp2/access.log"
+}
+
+
